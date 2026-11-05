@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import librosa
 import numpy as np
 import soundfile as sf
 
-from .clips import CLIP_IDS, prompt_for
+from . import draft
+from .clips import CLIP_IDS, melody_for, prompt_for
+from .synth import render_melody
 
 SR = 44100
-MIN_SECONDS = 5.0
+MIN_SECONDS = 3.0
 MAX_SECONDS = 45.0
 
 
@@ -18,9 +21,9 @@ def check_take(audio: np.ndarray, sr: int = SR) -> list[str]:
     problems = []
     seconds = audio.size / sr
     if seconds < MIN_SECONDS:
-        problems.append(f"Too short ({seconds:.1f}s). Aim for 10 to 20 seconds.")
+        problems.append(f"Too short ({seconds:.1f}s). Hum the whole melody.")
     if seconds > MAX_SECONDS:
-        problems.append(f"Too long ({seconds:.0f}s). Aim for 10 to 20 seconds.")
+        problems.append(f"Too long ({seconds:.0f}s). One time through is enough.")
     if audio.size:
         peak = float(np.max(np.abs(audio)))
         if peak < 0.03:
@@ -28,6 +31,32 @@ def check_take(audio: np.ndarray, sr: int = SR) -> list[str]:
         if np.mean(np.abs(audio) >= 0.99) > 0.001:
             problems.append("Too loud, the sound is distorting. Move back a little.")
     return problems
+
+
+def check_melody(audio: np.ndarray, melody, sr: int = SR) -> list[str]:
+    """Compare a hum to the melody it copied. An empty list means every note matched."""
+    resampled = librosa.resample(audio, orig_sr=sr, target_sr=draft.SR)
+    check = draft.analyze_audio(resampled, melody)["check"]
+    problems = []
+    if check["missing"]:
+        problems.append(f"Couldn't find note(s) {_numbers(check['missing'])}. Redo this one.")
+    if check["off"]:
+        problems.append(f"Note(s) {_numbers(check['off'])} landed on a different pitch. Redo this one.")
+    return problems
+
+
+def _numbers(values: list[int]) -> str:
+    return ", ".join(str(value) for value in values)
+
+
+def _listen(melody) -> None:
+    import sounddevice as sd
+
+    while True:
+        sd.play(render_melody(melody, SR), SR)
+        sd.wait()
+        if input("  Enter = record your hum, l = listen again: ").strip().lower() != "l":
+            return
 
 
 def save_take(data_dir: Path, clip_id: str, audio: np.ndarray, sr: int = SR) -> Path:
@@ -72,14 +101,25 @@ def run(data_dir: Path, device=None, clip: int | None = None) -> None:
         print("All clips are recorded.")
         return
 
-    print(f"{len(queue)} to record. Hum for 10 to 20 seconds each, at your own tempo. Ctrl+C to pause anytime.")
+    print(f"{len(queue)} to record. Wear headphones so the mic can't hear the melody. Ctrl+C to pause anytime.")
+    print("Copy each melody in any key that's comfortable. Your speed doesn't need to match.")
     try:
         for clip_id in queue:
             while True:
                 print(f"\n{clip_id}: {prompt_for(clip_id)}")
-                input("  Press Enter to start.")
+                melody = melody_for(clip_id)
+                if melody:
+                    input("  Press Enter to hear the melody.")
+                    _listen(melody)
+                else:
+                    input("  Press Enter to start.")
                 audio = _capture(device)
                 problems = check_take(audio)
+                if melody and audio.size:
+                    print("  Checking your notes...")
+                    problems += check_melody(audio, melody)
+                    if not problems:
+                        print(f"  All {len(melody)} notes matched.")
                 for problem in problems:
                     print(f"  ! {problem}")
                 answer = input("  Enter = keep, r = redo, p = play it back: ").strip().lower()

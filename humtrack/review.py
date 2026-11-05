@@ -9,7 +9,7 @@ from pathlib import Path
 import soundfile as sf
 
 from . import draft
-from .clips import CLIP_IDS, is_clip_id, prompt_for, split_of
+from .clips import CLIP_IDS, is_clip_id, melody_for, prompt_for, split_of
 from .notes import clean_notes, load_notes, save_notes
 from .synth import DEMO_MELODIES, make_hum
 
@@ -29,7 +29,10 @@ class Store:
         return self.data_dir / "truth" / f"{clip_id}.json"
 
     def prompt(self, clip_id: str) -> str:
-        return self.prompts.get(clip_id) or prompt_for(clip_id)
+        if self.prompts:
+            return self.prompts.get(clip_id, "")
+        prompt = prompt_for(clip_id)
+        return f"{prompt} The pitches come from the melody, so only check the timing." if melody_for(clip_id) else prompt
 
     def list_clips(self) -> dict:
         clips = [
@@ -48,7 +51,8 @@ class Store:
         cache = self.data_dir / "drafts" / f"{clip_id}.json"
         if cache.exists():
             return json.loads(cache.read_text(encoding="utf-8"))
-        result = draft.analyze(self.audio_path(clip_id))
+        melody = None if self.prompts else melody_for(clip_id)
+        result = draft.analyze(self.audio_path(clip_id), melody)
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(result), encoding="utf-8")
         return result

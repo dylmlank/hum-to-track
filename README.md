@@ -14,15 +14,17 @@ py -3.12 -m venv .venv
 
 ## Building the test set
 
-**1. Record 30 hums.** The recorder gives you a prompt for each one, warns about bad
-levels, and picks up where you left off.
+**1. Record 30 hums.** No music training needed. For 24 clips, the recorder plays a melody
+and you hum it back in any key, so the correct notes are already known. It checks your pitch
+and tells you if a take needs redoing. The last 6 are your own melodies. Wear headphones.
 
 ```bash
 .venv/Scripts/python.exe ht.py record
 ```
 
-**2. Correct the notes.** The page opens each hum with a first guess at its notes. Listen,
-fix the notes to what you meant to hum, and save.
+**2. Check the notes.** On hum-back clips, the page opens with the melody's notes lined up to
+your hum, so you only check the timing. On your own melodies it opens with a first guess:
+fix the notes to what you meant to hum.
 
 ```bash
 .venv/Scripts/python.exe ht.py review
@@ -43,8 +45,11 @@ Then open http://127.0.0.1:9791. To try the page without recordings, add `--demo
 - **Hidden clips:** every third clip is kept out of tuning, and is only scored with
   `--final`. Using those results to tune the engine would make the final number meaningless.
 - **No skipping:** a clip with no prediction scores zero.
-- **Known bias:** corrections start from a first guess, which could nudge the true notes
-  toward what a pitch tracker hears. Always check by ear, especially note starts.
+- **Known answers:** hum-back clips take their notes from the melody, not from anyone's ear.
+- **Separate score:** your own melodies are checked by ear only, so they get their own line.
+  They could be nudged toward what a pitch tracker hears, and copying a melody can also sound
+  a little different from humming your own idea. Report both numbers.
+- **Timing:** note starts on every clip are lined up automatically, then checked by ear.
 
 ## Tests
 

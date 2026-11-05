@@ -35,3 +35,15 @@ def make_hum(melody, sr: int = 44100, seed: int = 0, gap: float = 0.08):
     audio = np.concatenate(pieces)
     audio += rng.normal(0, 0.002, audio.size)
     return audio.astype(np.float32), truth
+
+
+def render_melody(melody, sr: int = 44100):
+    """Render (midi_pitch, seconds) pairs as a clear, plucked tone to hum along to."""
+    pieces = []
+    for pitch, seconds in melody:
+        t = np.arange(int(seconds * sr)) / sr
+        hz = 440.0 * 2 ** ((pitch - 69) / 12)
+        tone = sum(np.sin(2 * np.pi * k * hz * t) / k ** 2 for k in range(1, 5))
+        decay = np.exp(-t * 1.5) * np.clip(t / 0.005, 0, 1) * np.clip((seconds - t) / 0.02, 0, 1)
+        pieces.append(0.3 * tone * decay)
+    return np.concatenate(pieces).astype(np.float32)

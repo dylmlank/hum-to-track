@@ -10,29 +10,43 @@ import librosa
 import numpy as np
 from scipy.signal import medfilt
 
+from .align import align
+
 SR = 22050
 HOP = 256
 MIN_NOTE_SECONDS = 0.07
 MAX_GAP_SECONDS = 0.03
 
 
-def analyze(path: Path) -> dict:
+def analyze(path: Path, melody: list[tuple[int, float]] | None = None) -> dict:
     """Return the clip length, its pitch curve and draft notes."""
     audio, _ = librosa.load(path, sr=SR, mono=True)
+    return analyze_audio(audio, melody)
+
+
+def analyze_audio(audio: np.ndarray, melody: list[tuple[int, float]] | None = None) -> dict:
+    """Analyze audio at SR. With a melody, the notes come from it instead of a guess."""
     f0, voiced, _ = librosa.pyin(
         audio, fmin=65.0, fmax=1047.0, sr=SR, frame_length=2048, hop_length=HOP
     )
     midi = np.full(f0.shape, np.nan)
     midi[voiced] = librosa.hz_to_midi(f0[voiced])
     times = librosa.frames_to_time(np.arange(midi.size), sr=SR, hop_length=HOP)
-    return {
+    result = {
         "duration": round(audio.size / SR, 4),
         "curve": {
             "hop": HOP / SR,
             "midi": [None if np.isnan(m) else round(float(m), 2) for m in midi],
         },
-        "notes": segment(times, midi),
     }
+    if melody is None:
+        result["notes"] = segment(times, midi)
+    else:
+        rms = librosa.feature.rms(y=audio, frame_length=512, hop_length=HOP)[0]
+        aligned = align(midi, rms, HOP / SR, melody)
+        result["notes"] = aligned.pop("notes")
+        result["check"] = aligned
+    return result
 
 
 def segment(times: np.ndarray, midi: np.ndarray) -> list[dict]:

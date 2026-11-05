@@ -11,7 +11,7 @@ from pathlib import Path
 import mir_eval
 import numpy as np
 
-from .clips import is_clip_id, split_of
+from .clips import is_clip_id, melody_for, split_of
 from .notes import load_notes
 
 ONSET_TOLERANCE = 0.05
@@ -55,6 +55,11 @@ def _find_prediction(pred_dir: Path, clip_id: str) -> Path | None:
     return None
 
 
+def _mean(rows: list[dict]) -> dict:
+    keys = ("precision", "recall", "f1", "f1_with_end")
+    return {k: float(np.mean([r[k] for r in rows])) if rows else 0.0 for k in keys}
+
+
 def score_folder(pred_dir: Path, truth_dir: Path, split: str = "tune") -> dict:
     """Score every corrected clip in one split against a folder of predictions."""
     rows = []
@@ -68,9 +73,16 @@ def score_folder(pred_dir: Path, truth_dir: Path, split: str = "tune") -> dict:
             missing.append(clip_id)
         pred = load_notes(pred_path) if pred_path else []
         rows.append({"clip": clip_id, **score_clip(load_notes(truth_path), pred)})
-    keys = ("precision", "recall", "f1", "f1_with_end")
-    mean = {k: float(np.mean([r[k] for r in rows])) if rows else 0.0 for k in keys}
-    return {"split": split, "clips": len(rows), "missing": missing, "mean": mean, "rows": rows}
+    copied = [r for r in rows if melody_for(r["clip"])]
+    own = [r for r in rows if not melody_for(r["clip"])]
+    return {
+        "split": split,
+        "clips": len(rows),
+        "missing": missing,
+        "mean": _mean(copied),
+        "mean_own": _mean(own) if own else None,
+        "rows": rows,
+    }
 
 
 def format_report(result: dict) -> str:
@@ -80,11 +92,16 @@ def format_report(result: dict) -> str:
             f"{row['clip']:<10} {row['precision']:>9.3f} {row['recall']:>7.3f} "
             f"{row['f1']:>6.3f} {row['f1_with_end']:>7.3f}"
         )
-    mean = result["mean"]
-    lines.append(
-        f"{'MEAN':<10} {mean['precision']:>9.3f} {mean['recall']:>7.3f} "
-        f"{mean['f1']:>6.3f} {mean['f1_with_end']:>7.3f}"
-    )
+    means = [("MEAN", result["mean"])]
+    if result["mean_own"]:
+        means.append(("OWN*", result["mean_own"]))
+    for label, mean in means:
+        lines.append(
+            f"{label:<10} {mean['precision']:>9.3f} {mean['recall']:>7.3f} "
+            f"{mean['f1']:>6.3f} {mean['f1_with_end']:>7.3f}"
+        )
+    if result["mean_own"]:
+        lines.append("* Your own melodies, checked by ear only. MEAN covers hum-back clips.")
     lines.append(f"{result['clips']} {result['split']} clips scored")
     if result["missing"]:
         lines.append(f"Scored as zero, no prediction: {', '.join(result['missing'])}")

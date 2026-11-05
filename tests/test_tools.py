@@ -14,10 +14,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from humtrack import clips, draft
 from humtrack.notes import clean_notes, load_notes, save_notes
-from humtrack.record import check_take, save_take
+from humtrack.align import align
+from humtrack.record import check_melody, check_take, save_take
 from humtrack.review import Store, make_server
 from humtrack.score import format_report, score_clip, score_folder
-from humtrack.synth import DEMO_MELODIES, make_hum
+from humtrack.synth import DEMO_MELODIES, make_hum, render_melody
 
 TRUTH = [
     {"start": 0.0, "end": 0.5, "pitch": 60},
@@ -96,6 +97,71 @@ def test_midi_predictions_load(tmp_path):
     path = tmp_path / "clip_001.mid"
     midi.save(path)
     assert load_notes(path) == [{"start": pytest.approx(0.5), "end": pytest.approx(1.0), "pitch": 60}]
+
+
+# Hum-back clips
+def test_clip_list_mixes_copied_and_own_melodies():
+    melodies = [clips.melody_for(c) for c in clips.CLIP_IDS]
+    assert sum(m is not None for m in melodies) == 24
+    hidden = [m for c, m in zip(clips.CLIP_IDS, melodies) if clips.split_of(c) == "hidden"]
+    assert sum(m is None for m in hidden) == 2
+    for melody in filter(None, melodies):
+        assert 3.0 <= sum(seconds for _, seconds in melody) <= 45.0
+        assert render_melody(melody, 8000).size
+
+
+def fake_take(melody, shift=0, seed=1):
+    audio, truth = make_hum([(p + shift, s) for p, s in melody], sr=draft.SR, seed=seed)
+    return draft.analyze_audio(audio, melody), truth
+
+
+@pytest.mark.parametrize("number", [1, 6, 10, 12, 16, 20])
+@pytest.mark.parametrize("shift", [0, 5])
+def test_hum_back_finds_timing_in_any_key(number, shift):
+    result, truth = fake_take(clips.melody_for(f"clip_{number:03d}"), shift)
+    assert result["check"]["missing"] == [] and result["check"]["off"] == []
+    assert score_clip(truth, result["notes"])["f1"] >= 0.9
+
+
+@pytest.mark.parametrize("semitones", [1, 2, -3])
+def test_hum_back_flags_a_wrong_note(semitones):
+    melody = clips.melody_for("clip_001")
+    wrong = list(melody)
+    wrong[3] = (wrong[3][0] + semitones, wrong[3][1])
+    audio, _ = make_hum(wrong, sr=draft.SR, seed=1)
+    check = draft.analyze_audio(audio, melody)["check"]
+    assert 4 in check["off"] + check["missing"]
+
+
+def test_hum_back_reports_repeated_notes_run_together():
+    melody = [(60, 0.5), (60, 0.5), (60, 0.5), (64, 0.5)]
+    audio, _ = make_hum([(60, 1.5), (64, 0.5)], sr=draft.SR, seed=1)
+    assert draft.analyze_audio(audio, melody)["check"]["missing"]
+
+
+def test_hum_back_ignores_a_stray_blip_after_the_end():
+    melody = clips.melody_for("clip_001")
+    audio, truth = make_hum(melody + [(71, 0.1)], sr=draft.SR, seed=1, gap=0.25)
+    result = draft.analyze_audio(audio, melody)
+    assert result["notes"][-1]["end"] == pytest.approx(truth[-2]["end"], abs=0.1)
+
+
+def test_silent_take_is_reported_not_crashed():
+    result = align(np.full(500, np.nan), np.zeros(500), 0.01, [(60, 1.0), (62, 1.0)])
+    assert result["notes"] == [] and result["missing"] == [1, 2]
+    silence = np.zeros(44100, dtype=np.float32)
+    assert any("Couldn't find" in p for p in check_melody(silence, clips.melody_for("clip_001")))
+
+
+def test_own_melodies_score_separately(tmp_path):
+    truth_dir, pred_dir = tmp_path / "truth", tmp_path / "pred"
+    save_notes(truth_dir / "clip_001.json", TRUTH)
+    save_notes(truth_dir / "clip_025.json", TRUTH)
+    save_notes(pred_dir / "clip_001.json", TRUTH)
+    result = score_folder(pred_dir, truth_dir, "tune")
+    assert result["mean"]["f1"] == 1.0
+    assert result["mean_own"]["f1"] == 0.0
+    assert "OWN*" in format_report(result)
 
 
 def test_clean_notes_sorts_and_trims_overlaps():

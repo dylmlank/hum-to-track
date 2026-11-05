@@ -38,6 +38,29 @@ Then open http://127.0.0.1:9791. To try the page without recordings, add `--demo
 .venv/Scripts/python.exe ht.py score path/to/predictions
 ```
 
+## Try a hum in FL Studio
+
+Start loopMIDI, open FL with the StudioKit script enabled, and select a channel. Then:
+
+```bash
+.venv/Scripts/python.exe ht.py send 1
+```
+
+This puts the hum in a new pattern, so it can't overwrite your existing notes. Pass a clip
+number or the path to any `.wav`. The project's tempo stays the same unless you add
+`--match-tempo`, and `--channel` picks a different channel. The first import after FL opens
+has to be run by hand: in the piano roll, use Tools > Scripting > StudioKit Import.
+
+Hum in any key. The tool works out which natural minor (aeolian) key fits best and moves every
+note onto that scale, so a slightly off note lands on the nearest note in key. It's a best
+guess: use `--key C` to choose the key yourself, or `--no-snap` to keep the notes as hummed.
+A major melody uses the same notes as its relative minor, so it stays the same but gets
+labeled as that minor key.
+
+These are rough notes from the first guess, not the finished engine, so expect some split
+or wrong notes. Hidden test clips can't be sent, which keeps them unseen. Scale snapping only
+applies here: the accuracy score still compares the notes against what was actually hummed.
+
 ## How the score stays honest
 
 - **Standard grading:** `mir_eval` counts a note when the pitch is right and it starts

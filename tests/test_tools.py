@@ -19,6 +19,8 @@ from humtrack.record import check_melody, check_take, save_take
 from humtrack.review import Store, make_server
 from humtrack.score import format_report, score_clip, score_folder
 from humtrack.synth import DEMO_MELODIES, make_hum, render_melody
+from humtrack.key import NATURAL_MINOR, detect_tonic, parse_tonic, snap_pitch, tuning_offset
+from humtrack.to_fl import beat_seconds, drop_strays, find_recording, merge_flickers, merge_repeats, prepare, to_beats
 
 TRUTH = [
     {"start": 0.0, "end": 0.5, "pitch": 60},
@@ -214,6 +216,147 @@ def test_first_guess_finds_known_notes_in_fake_hums(tmp_path, seed):
     sf.write(path, audio, 44100)
     result = draft.analyze(path)
     assert score_clip(truth, result["notes"])["f1"] >= 0.8
+
+
+# Sending to FL
+def timed(*items):
+    return [{"start": s, "end": e, "pitch": p} for s, e, p in items]
+
+
+def test_flickers_fold_into_the_note_they_wobble_from():
+    notes = timed((0.0, 0.08, 49), (0.08, 0.5, 48), (0.6, 1.0, 50))
+    assert merge_flickers(notes) == timed((0.0, 0.5, 48), (0.6, 1.0, 50))
+
+
+def test_short_notes_that_are_really_different_stay():
+    notes = timed((0.0, 0.08, 60), (0.08, 0.5, 67), (0.8, 0.9, 67), (1.5, 2.0, 67))
+    assert merge_flickers(notes) == notes
+
+
+@pytest.mark.parametrize("spacing, bpm", [(0.5, 120), (0.25, 120), (1.0, 120), (0.75, 80)])
+def test_beat_stays_in_a_usable_tempo_range(spacing, bpm):
+    notes = timed(*[(i * spacing, (i + 1) * spacing, 60) for i in range(4)])
+    assert 60 / beat_seconds(notes) == pytest.approx(bpm)
+
+
+def test_to_beats_starts_at_zero_and_snaps_to_the_grid():
+    notes = timed((1.0, 1.48, 60), (1.51, 2.02, 62))
+    assert to_beats(notes, 0.5, velocity=0.5) == [
+        {"pitch": 60, "start": 0.0, "length": 1.0, "velocity": 0.5},
+        {"pitch": 62, "start": 1.0, "length": 1.0, "velocity": 0.5},
+    ]
+
+
+def test_to_beats_never_overlaps_or_stacks_notes():
+    notes = timed((0.0, 0.5, 60), (0.02, 0.1, 61), (0.4, 1.0, 62))
+    beats = to_beats(notes, 0.5)
+    assert [n["pitch"] for n in beats] == [60, 62]
+    assert beats[0]["start"] + beats[0]["length"] <= beats[1]["start"]
+
+
+def test_find_recording_blocks_hidden_clips(tmp_path):
+    with pytest.raises(ValueError, match="hidden"):
+        find_recording("3", tmp_path)
+    with pytest.raises(ValueError, match="between"):
+        find_recording("31", tmp_path)
+    with pytest.raises(ValueError, match="No recording"):
+        find_recording("1", tmp_path)
+    path = tmp_path / "idea.wav"
+    path.touch()
+    assert find_recording(str(path), tmp_path) == (path, "idea")
+
+
+def test_prepare_turns_a_fake_hum_into_beats(tmp_path):
+    audio, truth = make_hum(DEMO_MELODIES[0], seed=1)
+    path = tmp_path / "hum.wav"
+    sf.write(path, audio, 44100)
+    notes, bpm, _ = prepare(path, snap=False)
+    assert [n["pitch"] for n in notes] == [n["pitch"] for n in truth]
+    assert notes[0]["start"] == 0.0
+    assert 70 <= bpm < 140
+
+
+# Finding the key
+MINOR_TUNE = [0, 3, 5, 7, 8, 7, 5, 3, 0, 10, 0, 2, 3, 0]
+
+
+def tune_in(tonic, offset=0.0):
+    pitches = np.array([48 + tonic + step + offset for step in MINOR_TUNE], dtype=float)
+    return pitches, np.full(len(MINOR_TUNE), 0.5)
+
+
+@pytest.mark.parametrize("tonic", range(12))
+def test_detects_the_minor_key_whatever_key_you_hum_in(tonic):
+    pitches, durations = tune_in(tonic)
+    assert detect_tonic(pitches, durations)[0] == tonic
+
+
+@pytest.mark.parametrize("offset", [-0.4, -0.2, 0.2, 0.4])
+def test_humming_sharp_or_flat_throughout_keeps_the_right_notes(offset):
+    pitches, durations = tune_in(5, offset)
+    corrected = pitches - tuning_offset(pitches, durations)
+    assert detect_tonic(corrected, durations)[0] == 5
+    assert [snap_pitch(p, 5) for p in corrected] == [48 + 5 + s for s in MINOR_TUNE]
+
+
+def test_snap_moves_only_notes_outside_the_scale():
+    assert snap_pitch(60.0, 0) == 60
+    assert snap_pitch(63.2, 0) == 63
+    assert snap_pitch(63.7, 0) == 63
+    assert snap_pitch(64.3, 0) == 65
+    assert snap_pitch(61.4, 0) == 62
+    assert snap_pitch(66.3, 0) == 67
+    assert snap_pitch(69.2, 0) == 70
+    assert all((snap_pitch(p / 2, 9) - 9) % 12 in NATURAL_MINOR for p in range(80, 160))
+
+
+@pytest.mark.parametrize("text, tonic", [("C", 0), ("cm", 0), ("F#", 6), ("Bb", 10), ("A minor", 9), ("Am", 9)])
+def test_parse_tonic(text, tonic):
+    assert parse_tonic(text) == tonic
+
+
+def test_parse_tonic_rejects_nonsense():
+    with pytest.raises(ValueError, match="Unknown key"):
+        parse_tonic("H")
+
+
+def test_short_blips_far_from_their_neighbours_are_dropped():
+    notes = timed((0.0, 0.5, 60), (0.6, 1.0, 62), (1.2, 1.4, 73))
+    assert drop_strays(notes) == notes[:2]
+
+
+def test_real_jumps_and_long_notes_are_kept():
+    jump = timed((0.0, 0.5, 60), (0.6, 0.8, 72), (0.9, 1.3, 71))
+    assert drop_strays(jump) == jump
+    held = timed((0.0, 0.5, 60), (0.6, 1.2, 72))
+    assert drop_strays(held) == held
+
+
+def test_merge_repeats_joins_only_touching_notes():
+    notes = timed((0.0, 0.5, 60), (0.5, 0.8, 60), (1.5, 2.0, 60), (2.0, 2.5, 62))
+    assert merge_repeats(notes) == timed((0.0, 0.8, 60), (1.5, 2.0, 60), (2.0, 2.5, 62))
+
+
+def test_fake_hum_lands_in_the_detected_key(tmp_path):
+    melody = [(48 + 5 + step, 0.45) for step in MINOR_TUNE]
+    melody[3] = (melody[3][0] + 1, 0.45)
+    audio, _ = make_hum(melody, seed=1)
+    path = tmp_path / "hum.wav"
+    sf.write(path, audio, 44100)
+    notes, _, key = prepare(path)
+    assert key["name"] == "F minor"
+    assert all((n["pitch"] - 5) % 12 in NATURAL_MINOR for n in notes)
+
+
+def test_prepare_can_use_a_chosen_key_or_no_scale(tmp_path):
+    audio, truth = make_hum(DEMO_MELODIES[0], seed=1)
+    path = tmp_path / "hum.wav"
+    sf.write(path, audio, 44100)
+    notes, _, key = prepare(path, tonic=2)
+    assert key["name"] == "D minor"
+    assert all((n["pitch"] - 2) % 12 in NATURAL_MINOR for n in notes)
+    raw, _, none = prepare(path, snap=False)
+    assert none is None and [n["pitch"] for n in raw] == [n["pitch"] for n in truth]
 
 
 # Correction page server
